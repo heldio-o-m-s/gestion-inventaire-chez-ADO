@@ -1,3 +1,5 @@
+import re
+import unicodedata
 from urllib.parse import quote
 
 import pandas as pd
@@ -40,21 +42,63 @@ def _en_entier(serie: pd.Series) -> pd.Series:
     return pd.to_numeric(propre, errors="coerce").fillna(0).astype(int)
 
 
+def _norm(s) -> str:
+    """Minuscules, sans accents, espaces normalisés : 'Qté  en Stock' -> 'qte en stock'."""
+    s = unicodedata.normalize("NFKD", str(s).replace("\u00a0", " "))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+_CANON = {
+    _norm(c): c
+    for c in (COL_CODE, COL_ARTICLE, COL_CAT, COL_SOUSCAT, COL_MODELE, COL_QTE, COL_STATUT)
+}
+_FALLBACKS = [
+    (r"^q.*stock", COL_QTE),
+    (r"^(etat|statut)", COL_STATUT),
+    (r"^(modele|marque|ref)", COL_MODELE),
+    (r"^article|^description|^designation", COL_ARTICLE),
+    (r"^sub|^sous", COL_SOUSCAT),
+    (r"^categorie", COL_CAT),
+]
+
+
+def _nom_canonique(c) -> str:
+    n = _norm(c)
+    if n in _CANON:
+        return _CANON[n]
+    for motif, canon in _FALLBACKS:
+        if re.search(motif, n):
+            return canon
+    return str(c).strip()
+
+
 @st.cache_data(ttl=20)
 def charger_donnees() -> pd.DataFrame:
     raw = pd.read_csv(CSV_URL, header=None, dtype=str)
 
     header_idx = None
     for idx, row in raw.iterrows():
-        if row.astype(str).str.strip().eq(COL_CODE).any():
+        if row.astype(str).map(_norm).eq(_norm(COL_CODE)).any():
             header_idx = idx
             break
     if header_idx is None:
-        raise ValueError(f"Colonne '{COL_CODE}' introuvable dans l'onglet '{SHEET_NAME}'.")
+        raise ValueError(
+            f"Colonne '{COL_CODE}' introuvable dans l'onglet '{SHEET_NAME}'. "
+            f"Première ligne lue : {[str(x) for x in raw.iloc[0].tolist()]}"
+        )
 
     df = raw.iloc[header_idx + 1:].copy()
-    df.columns = raw.iloc[header_idx].astype(str).str.strip()
+    df.columns = [_nom_canonique(c) for c in raw.iloc[header_idx]]
     df = df.loc[:, df.columns != "nan"]
+
+    requises = [COL_CODE, COL_ARTICLE, COL_CAT, COL_SOUSCAT, COL_MODELE, COL_QTE, COL_STATUT]
+    manquantes = [c for c in requises if c not in df.columns]
+    if manquantes:
+        raise ValueError(
+            f"Colonnes introuvables : {manquantes}. "
+            f"Colonnes lues dans le Sheets : {[str(c) for c in df.columns]}"
+        )
 
     df = df.dropna(subset=[COL_CODE])
     df = df[~df[COL_CODE].astype(str).str.contains("Total", case=False, na=False)]

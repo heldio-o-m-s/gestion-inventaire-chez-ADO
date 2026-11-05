@@ -89,7 +89,20 @@ def charger_donnees() -> pd.DataFrame:
         )
 
     df = raw.iloc[header_idx + 1:].copy()
-    df.columns = [_nom_canonique(c) for c in raw.iloc[header_idx]]
+    noms = [_nom_canonique(c) for c in raw.iloc[header_idx]]
+
+    # Google (gviz) efface le titre des colonnes numériques : « Qté en Stock »,
+    # « Prix Unitaire » et « Valeur Totale » arrivent donc sans nom.
+    # On les nomme d'après leur position, juste après « Modèle / Réf. ».
+    if COL_QTE not in noms and COL_MODELE in noms:
+        i = noms.index(COL_MODELE)
+        for decalage, nom in enumerate((COL_QTE, "Prix Unitaire", "Valeur Totale"), start=1):
+            if i + decalage < len(noms) and noms[i + decalage] == "nan":
+                noms[i + decalage] = nom
+            else:
+                break
+
+    df.columns = noms
     df = df.loc[:, df.columns != "nan"]
 
     requises = [COL_CODE, COL_ARTICLE, COL_CAT, COL_SOUSCAT, COL_MODELE, COL_QTE, COL_STATUT]
